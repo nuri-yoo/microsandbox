@@ -153,7 +153,9 @@ pub(crate) fn do_fallocate(
             }
         }
 
-        // Extend file size if needed.
+        // Extend the file only when the allocated range ends past the current
+        // EOF. `fallocate(2)` in the default mode never shrinks a file, so a
+        // range that ends inside the file must leave the size alone.
         let new_size = offset
             .checked_add(length)
             .ok_or_else(|| platform::linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))
@@ -162,9 +164,15 @@ pub(crate) fn do_fallocate(
                     platform::linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW))
                 })
             })?;
-        let ret = unsafe { libc::ftruncate(fd, new_size) };
-        if ret < 0 {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut st) } < 0 {
             return Err(platform::linux_error(io::Error::last_os_error()));
+        }
+        if new_size > st.st_size {
+            let ret = unsafe { libc::ftruncate(fd, new_size) };
+            if ret < 0 {
+                return Err(platform::linux_error(io::Error::last_os_error()));
+            }
         }
     }
 
