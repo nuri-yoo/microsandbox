@@ -9,7 +9,9 @@
 //! ## fallocate
 //!
 //! On macOS, uses `fcntl(F_PREALLOCATE)` + `ftruncate` since `fallocate64` doesn't exist.
-//! Tries contiguous allocation first, falls back to non-contiguous.
+//! Only the part of the range past EOF is reserved and made visible; a range that ends inside
+//! the file leaves the size alone. Tries contiguous allocation first, falls back to
+//! non-contiguous.
 
 use std::{io, os::fd::AsRawFd};
 
@@ -132,30 +134,12 @@ pub(crate) fn do_fallocate(
             )));
         }
 
-        let alloc_len = i64::try_from(length)
-            .map_err(|_| platform::linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))?;
-
-        let mut store = libc::fstore_t {
-            fst_flags: libc::F_ALLOCATECONTIG,
-            fst_posmode: libc::F_PEOFPOSMODE,
-            fst_offset: 0,
-            fst_length: alloc_len,
-            fst_bytesalloc: 0,
-        };
-
-        let ret = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) };
-        if ret < 0 {
-            // Try non-contiguous allocation.
-            store.fst_flags = libc::F_ALLOCATEALL;
-            let ret = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) };
-            if ret < 0 {
-                return Err(platform::linux_error(io::Error::last_os_error()));
-            }
-        }
-
         // In the default mode `fallocate(2)` says the file size "will be
-        // changed if offset+size is greater than the file size", so read the
-        // current size and extend only then. A host process that grows the
+        // changed if offset+size is greater than the file size". macOS has no
+        // way to reserve blocks for a range inside the file (`F_PEOFPOSMODE`
+        // only allocates past EOF), so the part of the range that ends inside
+        // the file is left alone and only the tail past EOF is reserved and
+        // then made visible with ftruncate. A host process that grows the
         // file between this fstat and the ftruncate can still lose that
         // growth; a guest writer cannot, because the guest kernel holds the
         // inode lock for the whole fallocate.
@@ -171,11 +155,31 @@ pub(crate) fn do_fallocate(
         if unsafe { libc::fstat(fd, &mut st) } < 0 {
             return Err(platform::linux_error(io::Error::last_os_error()));
         }
-        if new_size > st.st_size {
-            let ret = unsafe { libc::ftruncate(fd, new_size) };
+        if new_size <= st.st_size {
+            return Ok(());
+        }
+
+        let mut store = libc::fstore_t {
+            fst_flags: libc::F_ALLOCATECONTIG,
+            fst_posmode: libc::F_PEOFPOSMODE,
+            fst_offset: 0,
+            fst_length: new_size - st.st_size,
+            fst_bytesalloc: 0,
+        };
+
+        let ret = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) };
+        if ret < 0 {
+            // Try non-contiguous allocation.
+            store.fst_flags = libc::F_ALLOCATEALL;
+            let ret = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &mut store) };
             if ret < 0 {
                 return Err(platform::linux_error(io::Error::last_os_error()));
             }
+        }
+
+        let ret = unsafe { libc::ftruncate(fd, new_size) };
+        if ret < 0 {
+            return Err(platform::linux_error(io::Error::last_os_error()));
         }
     }
 
