@@ -153,9 +153,12 @@ pub(crate) fn do_fallocate(
             }
         }
 
-        // Extend the file only when the allocated range ends past the current
-        // EOF. `fallocate(2)` in the default mode never shrinks a file, so a
-        // range that ends inside the file must leave the size alone.
+        // In the default mode `fallocate(2)` says the file size "will be
+        // changed if offset+size is greater than the file size", so read the
+        // current size and extend only then. A host process that grows the
+        // file between this fstat and the ftruncate can still lose that
+        // growth; a guest writer cannot, because the guest kernel holds the
+        // inode lock for the whole fallocate.
         let new_size = offset
             .checked_add(length)
             .ok_or_else(|| platform::linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)))
