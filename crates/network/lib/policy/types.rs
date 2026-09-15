@@ -1254,7 +1254,7 @@ mod tests {
             // fell inside U+263A.
             HostnameSource::Sni("x\u{263A}aaaaaaaaaaaaaa"),
         );
-        assert_ne!(eval, EgressEvaluation::Allow);
+        assert_eq!(eval, EgressEvaluation::Deny);
     }
 
     #[test]
