@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_suffix_handles_multibyte_hostnames() {
+    fn matches_suffix_label_alignment_and_multibyte_hostnames() {
         // 14 bytes; the old byte-offset split landed inside the 3-byte
         // U+263A and panicked. Must simply not match.
         assert!(!matches_suffix("x\u{263A}aaaaaaaaaa", "example.com"));
